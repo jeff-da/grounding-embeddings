@@ -4,6 +4,6 @@ word2vec/*
 mcrae/*
 cslb/*
 wndomains/*
-
+subgraphs/all/*
 # Compiled files
 *.pyc

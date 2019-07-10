@@ -12,11 +12,13 @@ import csv
 import os.path
 import sys
 import string
+from bert_embedding import BertEmbedding
+import mxnet as mx
 
 from gensim.models.keyedvectors import KeyedVectors
 import numpy as np
 import matplotlib as mpl
-mpl.use("Agg")
+# mpl.use("Agg")
 import matplotlib.mlab as mlab
 import matplotlib.pyplot as plt
 import nltk
@@ -33,6 +35,21 @@ import domain_feat_freq
 import get_domains
 from util import get_map_from_tsv
 
+def bivariate_normal(X, Y, sigmax=1.0, sigmay=1.0,
+                     mux=0.0, muy=0.0, sigmaxy=0.0):
+    """
+    Bivariate Gaussian distribution for equal shape *X*, *Y*.
+    See `bivariate normal
+    <http://mathworld.wolfram.com/BivariateNormalDistribution.html>`_
+    at mathworld.
+    """
+    Xmu = X-mux
+    Ymu = Y-muy
+
+    rho = sigmaxy/(sigmax*sigmay)
+    z = Xmu**2/sigmax**2 + Ymu**2/sigmay**2 - 2*rho*Xmu*Ymu/(sigmax*sigmay)
+    denom = 2*np.pi*sigmax*sigmay*np.sqrt(1-rho**2)
+    return np.exp(-z/(2*(1-rho**2))) / denom
 
 # The "pivot" source is where we draw concept representations from. The
 # resulting feature_fit metric represents how well these representations encode
@@ -268,7 +285,6 @@ def loocv_features(features, X, Y, clf_base):
         best_Cs[best_C] += 1
         final_results[features[f_idx]] = best_C
 
-    print(best_Cs)
     return final_results
 
 
@@ -325,6 +341,20 @@ def loocv_feature(C, f_idx, clf):
 
     return f_idx, C, scores
 
+def get_bert_embeddings(word2idx, usable_features):
+    result = {}
+    ctx = mx.gpu(0)
+    bert_embedding = BertEmbedding(ctx=ctx)
+    for f_idx, f_name in tqdm(enumerate(usable_features),
+                            total=len(usable_features),
+                            desc="Contexturalizing and generating BERT embeddings"):
+        X = np.zeros((len(word2idx), 768)) # 768 if BERT-base, 1024 if BERT large
+        for word in word2idx:
+            phrase = word + " " + ' '.join(f_name.split("_"))
+            current_embedding = bert_embedding([phrase], 'avg', False)
+            X[word2idx[word]] = current_embedding[0][1][0]
+        result[f_idx] = X
+    return result
 
 def analyze_features(features, word2idx, embeddings, clfs=None):
     """
@@ -358,8 +388,11 @@ def analyze_features(features, word2idx, embeddings, clfs=None):
         usable_features.append(feature.name)
         feature_concepts[feature.name] = concepts
 
-    # Prepare for a multi-label logistic regression.
-    X = embeddings
+    # Prepare for a multi-label logistic regression. Jeff
+    # print(usable_features)
+    # print(word2idx)
+    # map of f_idx to embeddings for that f_idx
+    X = get_bert_embeddings(word2idx, usable_features) # not this
     Y = np.zeros((len(word2idx), len(usable_features)))
 
     for f_idx, f_name in enumerate(usable_features):
@@ -383,13 +416,13 @@ def analyze_features(features, word2idx, embeddings, clfs=None):
             clf = clfs.get(f_name)
         if clf is None:
             clf = clf_base(C=Cs[f_name])
-            clf.fit(X, Y[:, f_idx])
+            clf.fit(X[f_idx], Y[:, f_idx])
 
         preds = clf.predict(X)
         metric = metrics.f1_score(Y[:, f_idx], preds)
 
         results.append(AnalyzeResult(features[f_name], counts[f_idx],
-                                     clf, metric))
+                                     clf, metric)) # metric is y axis
 
     return results
 
@@ -455,14 +488,14 @@ def plot_gaussian_contour(xs, ys, vars_xs, vars_ys):
         x_stddev = np.sqrt(x_var)
         y_stddev = np.sqrt(y_var)
 
-        gauss = mlab.bivariate_normal(x_samp, y_samp,
+        gauss = bivariate_normal(x_samp, y_samp,
                                       mux=x, sigmax=x_stddev,
                                       muy=y, sigmay=y_stddev)
 
         # Draw level curves at 1 and 2 stddev away
         x_level = x + np.array([0.5]) * x_stddev
         y_level = y + np.array([0.5]) * y_stddev
-        levels = mlab.bivariate_normal(x_level, y_level,
+        levels = bivariate_normal(x_level, y_level,
                                        mux=x, sigmax=x_stddev,
                                        muy=y, sigmay=y_stddev)
         levels = list(sorted(levels))
@@ -686,7 +719,7 @@ def produce_unified_graph(vocab, features, feature_data, domain_concepts=None):
     ax.set_ylabel(PEARSON2_NAME)
     ax.set_zlabel("feature weight")
     ax.scatter(xs, ys, zs, c=cs)
-    plt.show()
+    # plt.show()
 
     slope, intercept, r_value, p_value, std_err = stats.linregress(xs, ys)
     print("Pearson vs Pearson")
@@ -920,6 +953,7 @@ def swarm_feature_cats(feature_groups, fcat_median):
     plt.tight_layout()
     fig = sns_plot.get_figure()
     fig.savefig(fig_path, **SAVEFIG_KWARGS)
+    plt.show(fig)
 
 
 def main():
@@ -929,11 +963,13 @@ def main():
     word2idx = {w: i for i, w in enumerate(vocab)}
 
     clfs = None
+    """
     clf_path = Path(CLASSIFIER_OUTPUT)
     if clf_path.exists():
         with clf_path.open("rb") as clf_f:
             print("Loading classifiers from pickled dump.")
             clfs = pickle.load(clf_f)
+    """
 
     feature_data = analyze_features(features, word2idx, embeddings, clfs=clfs)
     feature_data = sorted(feature_data, key=lambda f: f.metric)
@@ -1044,16 +1080,6 @@ def main():
     # Render two-col figures
     with plt.style.context({"font.size": 18, "axes.labelsize": 18, "xtick.labelsize": 16, "ytick.labelsize": 16}):
         swarm_feature_cats(groups["br_label"], fcat_median)
-
-        feature_data = [(result.feature.name, result.n_concepts, result.metric)
-                        for result in feature_data]
-        domain_concepts = do_cluster(vocab, features, feature_data)
-
-    # Render 1-col figures
-    with plt.style.context({"font.size": 20, "axes.labelsize": 20, "xtick.labelsize": 17, "ytick.labelsize": 17}):
-        produce_unified_graph(vocab, features, feature_data, domain_concepts=domain_concepts)
-        produce_unified_domain_graph(vocab, features, feature_data, domain_concepts=domain_concepts)
-
 
 if __name__ == "__main__":
     main()
