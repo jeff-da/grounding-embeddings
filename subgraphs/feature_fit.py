@@ -62,6 +62,7 @@ PIVOT = "wikigiga"
 # purpose.
 INPUT_FVOCAB = None
 
+BERT_EMBEDDING_DIR = "./saved_bert_embeddings/"
 if PIVOT == "mcrae":
     INPUT = "./all/mcrae_vectors.txt"
 elif PIVOT == "cslb":
@@ -350,9 +351,14 @@ def get_bert_embeddings(word2idx, usable_features):
                             desc="Contexturalizing and generating BERT embeddings"):
         X = np.zeros((len(word2idx), 768)) # 768 if BERT-base, 1024 if BERT large
         for word in word2idx:
-            phrase = word + " " + ' '.join(f_name.split("_"))
-            current_embedding = bert_embedding([phrase], 'avg', False)
-            X[word2idx[word]] = current_embedding[0][1][0]
+            filename = str(f_idx) + "_" + str(word2idx[word]) + ".txt"
+            if os.path.exists(os.path.join(BERT_EMBEDDING_DIR, filename)):
+                X[word2idx[word]] = np.loadtxt(filename, delimiter=',')
+            else:
+                phrase = word + " " + ' '.join(f_name.split("_"))
+                current_embedding = bert_embedding([phrase], 'avg', False)
+                X[word2idx[word]] = current_embedding[0][1][0]
+                np.savetxt(os.path.join(BERT_EMBEDDING_DIR, filename), current_embedding[0][1][0], delimiter=',')
         result[f_idx] = X
     return result
 
@@ -405,7 +411,7 @@ def analyze_features(features, word2idx, embeddings, clfs=None):
     clf_base = partial(LogisticRegression, class_weight="balanced",
                        fit_intercept=False)
 
-    Cs = load_loocv(usable_features, X, Y, clf_base)
+    # Cs = load_loocv(usable_features, X, Y, clf_base)
     counts = Y.sum(axis=0)
     results = []
     for f_idx, f_name in tqdm(enumerate(usable_features),
@@ -415,10 +421,11 @@ def analyze_features(features, word2idx, embeddings, clfs=None):
         if clfs is not None:
             clf = clfs.get(f_name)
         if clf is None:
-            clf = clf_base(C=Cs[f_name])
+            clf = clf_base()
+            # print(X[f_idx])
             clf.fit(X[f_idx], Y[:, f_idx])
-
-        preds = clf.predict(X)
+            # print(X[f_idx].shape)
+        preds = clf.predict(X[f_idx])
         metric = metrics.f1_score(Y[:, f_idx], preds)
 
         results.append(AnalyzeResult(features[f_name], counts[f_idx],
@@ -963,13 +970,16 @@ def main():
     word2idx = {w: i for i, w in enumerate(vocab)}
 
     clfs = None
-    """
+    
     clf_path = Path(CLASSIFIER_OUTPUT)
     if clf_path.exists():
+        pass
+        """
         with clf_path.open("rb") as clf_f:
             print("Loading classifiers from pickled dump.")
             clfs = pickle.load(clf_f)
-    """
+        """
+    
 
     feature_data = analyze_features(features, word2idx, embeddings, clfs=clfs)
     feature_data = sorted(feature_data, key=lambda f: f.metric)
@@ -988,7 +998,7 @@ def main():
         with clf_path.open("wb") as clf_out:
             clfs = {result.feature.name: result.clf for result in feature_data}
             pickle.dump(clfs, clf_out)
-
+    """
     classifier_nearby = analyze_classifiers(feature_data, all_embeddings,
                                             min_count=MIN_WORD_COUNT)
     with open(CLASSIFIER_NEIGHBOR_OUTPUT, "w") as f, \
@@ -1004,7 +1014,7 @@ def main():
                 _, pos = nltk.pos_tag([w])[0]
                 if not pos.startswith("NN"):
                     f_nonoun.write("\t%.5f\t%s\n" % (sim, w))
-
+    """
     # Output raw feature data and group features
     with open(FF_OUTPUT, "w") as ff_out:
         for result in feature_data:
@@ -1016,7 +1026,7 @@ def main():
                 grouping_fn = grouping_fns[grouping_fn_name]
                 group = grouping_fn(result.feature.name)
                 groups[grouping_fn_name][group].append(result)
-
+    """
     # Output really raw feature data
     with open(FF_ALL_OUTPUT, "w") as ff_out:
         for result in feature_data:
@@ -1029,7 +1039,7 @@ def main():
                 ff_out.write("%s\t%.5f\t%s\t%f\t%i\n"
                              % (result.feature.name, result.metric,
                                 concept, concept_prob, is_positive))
-
+    """
     # Output grouped feature information
     with open(GROUP_OUTPUT, "w") as group_out:
         for grouping_fn_name, groups_result in sorted(groups.items()):
@@ -1055,7 +1065,7 @@ def main():
                                    mean, pcts[2]))
                 fcat_mean[label_group] = mean
                 fcat_median[label_group] = pcts[1]
-
+    """
     # Output per-concept scores
     with open(CONCEPT_OUTPUT, "w") as concept_f:
         for concept in vocab:
@@ -1065,8 +1075,9 @@ def main():
 
             c_score = np.median(metrics)
             concept_f.write("%s\t%f\n" % (concept, c_score))
-
-    #produce_feature_fit_bars(groups["br_label"])
+    """
+    """
+    produce_feature_fit_bars(groups["br_label"])
     if SOURCE == "cslb":
         do_bootstrap_test(groups["br_label"],
                           ["visual perceptual", "other perceptual"],
@@ -1076,7 +1087,7 @@ def main():
                           ["visual-motion", "visual-form_and_surface", "visual-colour",
                            "sound", "tactile", "smell", "taste"],
                           ["function", "taxonomic"])
-
+    """
     # Render two-col figures
     with plt.style.context({"font.size": 18, "axes.labelsize": 18, "xtick.labelsize": 16, "ytick.labelsize": 16}):
         swarm_feature_cats(groups["br_label"], fcat_median)
